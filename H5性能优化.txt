@@ -1,0 +1,202 @@
+1.首屏加载问题
+
+1.1 设置首屏加载态（此前已经做了很多大的库cdn加载。主js已经做了拆分。）
+首屏往往需要加载vendors.js、main.js和主要的css文件，
+在网络不好的情况下需要比较长的时间去加载，这时用户会有一段比较长的白屏时间
+我们可以在加载这些静态资源时，放置一个loading态的提示信息，
+比如放置一个loading.gif的base64图片。
+但是，浏览器在加载完页面所需的css外联之前是不会渲染页面的，
+这意味着loading.gif也无法渲染。
+因此我们需要将整个main.css文件内联到html页面里，
+相关的webpack插件为HtmlWebpackInlineSourcePlugin里。
+这样，当html加载完毕后，页面也能够立马渲染了，同时也减少外联css的请求和延迟。
+大家也不必担心html文件会变得很臃肿,经过OptimizeCssAssetsPlugin插件的压缩，
+再加上gzip压缩后，整个html文件一般都会在10kb以内，
+只要用户的网络不要太差，基本能秒进加载态。
+
+1.2 缩小js文件大小
+这里主要是提一下webpack和babel的配置。首先，一定要把webpack升级到4，babel升级到7。
+webpack4的打包速度快很多，babel7效率高很多。
+
+
+1.2.1 babel配置
+
+先说下babel的配置，一定要给@babel/preset-env设置
+"modules": false,  "useBuiltIns": “usage”两个参数。
+modules=false用于webapck的tree shaking,
+因为webpack的tree shaking 基于es6的module系统，
+如果babel把import编译了，那么webpack就无法识别了。modules的默认配置是auto，
+即使不配置成false，貌似babel-loader也不会去编译import和export，不过安全起见，
+还是直接将modules设置为false吧。useBuiltIns的作用是在需要polyfill的模块里动态导入
+需要的polyfill模块，这些动态导入模块最后会被webpack收集到vendors里。
+通过这种方式的处理，即可以不用引入整个polyfill模块，
+也不需要像runtime插件那样长生很多的冗余代码，大大减小了polyfill所产生的文件大小。
+
+1.2.2 webpack配置
+
+1.webpack4重构了bundle树依赖算法，用官方文档的话说，保证不会加载多余不需要的模块。
+大家可以通过配置optimization.splitChunks这个参数，进行自由的设置bundle的分割方式，
+一般情况下，大家只要简单的配置optimization.splitChunks.chunks: ‘all’就可以了。
+这里简单的对optimization.splitChunks作一下介绍，具体大家可以参考下官方文档。
+默认情况下，splitChunks参数只会对异步加载的bundle起作用，将chunks设置为’all’，
+可以保证splitChunks同时作用于entry bundle，可以有效的提取entry bundle的公共模块。
+splitChunks默认会提取/node_modules/下的所有需要的模块，放置在名为vendors~entryName的bundle里。
+同时，会提取被bundles shared的普通模块到default~entryName的bundle里。
+2.将package.json的sideEffects属性设置为false，告诉webpack工程的所有模块是不含“副作用”的，
+这样webpack在作tree-shaking的时候，会将无用的代码全部剔除。这里需要将css模块排除再外，
+否则所有css模块也会被webpack全部丢弃。具体设置如下：“sideEffect”:[“*.css”]。
+webpack4总体上配置简化了很多，如果大家不太熟悉，可以具体翻阅下官方文档，
+有些文档上不是很清楚的地方，大家也可以结合试验和源码进行深入研究。
+
+
+2.浏览器渲染相关的几点优化
+
+2.1.1 reflow、repaint的优化
+
+js操作dom的style会引起浏览器reflow和repaint。
+reflow和repaint是非常消耗性能的，对于机型比较差的手机，往往会造成卡顿。
+像改变dom位置、大小、边距等操作，因为这些操作会引起整个文档流位置的变化，
+因此会引起浏览器reflow、repaint；而像改变dom的透明度，
+字体颜色等这些不会影响到整个文档流的操作，则仅仅会引起浏览器的repaint操作。
+在实际应用中，我们往往会对一些dom设置一些动画或者拖拽效果，
+我们只要简单的将dom的position设置为absolute或者fixed使其脱离文档流，
+就可以减少浏览器的reflow和repaint的范围。但是有些时候不允许设置dom脱离文档流，
+这时候可以通过transform属性来改变dom的位置和大小。
+transform会在文档流之上建立一个composition layer，使dom的动画不会影响到整个文档流。
+
+2.1.2 scroll的优化
+
+如果你在开发过程中发现，在某些低端机型上发现滚动非常卡，那么可以尝试用body作滚动，
+去除div的滚动。body的滚动似乎天然有作过优化。
+
+3.提升系统响应性能
+
+3.1 大量图片加载的处理
+
+我们在开发古典专区的过程中，遇到了需要显示2000多个头像的情况。
+这意味有2000多张图片需要去加载，如果每张图片有100KB，
+总共需要下载的大小约为200M，再加上2000多个请求，
+在一些低端机型上很有可能就直接闪退了。
+因此，我们需要减小每张图片的大小，并且对图片进行懒加载，每次加载差不多50个。
+nos本身是支持通过参数对图片进行裁剪的，
+例如imageView&quality=95&interlace=1&thumbnail=108y108，
+就是告诉nos将图片的质量变为95，并且图片裁剪为108px*108px。
+图片懒加载的话，一般都是判断img元素是否进入视口再进行加载。
+但是，这里可以对算法做一点点优化。如果每次都判断几千个dom元素是否进入视口，
+计算量似乎有点大。所以大家可以根据实际的应用场景，对这里的算法作适当的优化。
+以古典专区为例，有个页面是显示大师相关作品集的图片，
+每个大师一般有10个作品集，每个作品集会有20个左右作品。
+我们这里的懒加载算法是以作品集为单位，
+而不是作品为单位，这样就可以把计算量从200变成了10。
+
+3.2 大图片的处理
+
+古典专区的首页有张原来有400KB左右的banner图片，
+这么大的图片在网络比较差的环境下降占用大量的带宽，严重阻碍了正常接口的收发。
+后来我们根据这张图片的组成将其拆成了3部分，底色渐变直接由css生成，
+其余2部分则变为总和只有100KB的png，
+并且这两个png只有在正常接口正常返回并且解析成功后才去加载
+
+3.3 svg和iconfont
+
+svg
+
+优点：相比较png具有更小的体积，并且可以自适应大小。
+缺点：当大小比较小的时候容易失真，在一些低端机型上，渲染比较慢
+
+iconfont
+
+优点：体积小，可以随意调整大小和颜色
+缺点：效果会比png差一点点
+
+4.浏览器缓存
+
+4.1 强缓存
+
+平时常说的浏览器缓存，存在memory cache 或者disk里。一般由Cache-Control头控制。
+举个例子Cache-Control： public, max-age=86400，
+指的是这个资源是可以被代理（cdn等）或者浏览器缓存的，并且最大的缓存时间是86400秒。
+目前，sdp部署的cdn的max-age为10800秒（3小时），nos上图片的max-age为31536000秒（1年）。
+
+4.2 application cache
+
+告诉浏览器将特定资源缓存在application cache中，便于离线使用或者用于更快速获取资源。
+通过<html manifest=“/appCache.appcache”>，
+由appCache.appcache文件告知浏览器需要缓存的资源清单。
+浏览器会自动加载/appCache.appcache文件，并提取里面的内容然后缓存起来。
+
+appCache.appcache的文件格式为：
+
+CACHE MANIFEST
+#version - 2018-12-31 12:00:00
+
+/st/classical/
+
+/st/classical/indexcaa502be.css
+
+/st/classical/index.caa502be.js
+
+NETWORK:
+
+*
+
+FALLBACK:
+
+
+
+manifest必须要以CACHE MANIFEST开头，接下来是要缓存的资源清单。
+NETWORK *表示对于没有缓存的资源，则全部通过网络获取，
+FALLBACK指网络获取失败的回退路径。
+由于manifest只有在manifest文件发生变化时才会更新，
+所以我们需要加一下版本号，version。
+在每次发布时，通过webpack创建生成manifest文件的同时，注入版本号。
+这样，浏览器就能获取最新的资源了并缓存起来了。
+
+appliation的优点是兼容性比较好，手机端基本上都支持了。
+缺点是无法缓存跨域的资源；有些机型可能会把manifest文件也会缓存，
+意味着manifest永远无法得到更新；如果用户清空了缓存，
+那么浏览器无力将这些资源再缓存回来了，因为manifest始终没有变化。
+w3c规范已经不建议使用application cache了，以后可能会被浏览器剔除。
+
+4.3 service worker
+对浏览器的http请求作了一层拦截，可以自由控制http请求的request和response。
+分为register、install和active3个阶段。
+register就是向浏览器里注册http拦截器，注册成功后，
+service worker会进入install阶段。我们一般在install阶段，
+将网站的静态资源通过http请求获取资源，然后以资源的url为cachKey缓存到cache storage中。
+对于同一个service worker，install只会安装一次，安装成功后，
+service worker进入等待激活阶段。如果有老的service worker存在，
+则等到整个应用退出，下次用户再次进入应用时进入到active阶段；
+如果没有老的service worker存在，则直接接入active阶段。
+也可以通过skipWaiting直接在install完之后进入到active阶段。
+激活阶段一般我们可以删除老的缓存资源。
+
+service worker的优点是对缓存资源的控制性好;
+w3c建议使用的方案；支持缓存跨域资源。缺点是支持度不够好，
+android需要5.0+,并且不是完美支持；ios需要11.4+。
+
+5.其他
+
+5.1 弹性布局 flex
+
+5.2 亚像素渲染、头发丝边线
+如果元素样式属性大小是小数，则浏览器会进入到亚像素渲染。
+举个例子：<div style=“height: 100px; border: 0.5px solid green”></div>,
+div的边线大小设置成了0.5px，浏览器是如何去渲染这个0.5px呢？
+答案就是亚像素渲染，这里谈谈我自己的理解：亚像素是一个算法，
+比如插值算法，往1个像素里面插入许多个点，使其变成10*10的方正点。
+那么此时1个像素点就被细分成了100个像素点，相当于精度被提高了100倍。
+此时，浏览器就有能力去渲染0.01px的能力。
+当然，算法最终会落到实际物理像素上，如上面的边线大小0.5px,
+最终肯定需要占据实际物理像素的倍数个点。
+利用亚像素渲染，我们可以制作头发丝边线。
+假设一块2倍屏幕，那么0.5px的边线最终将只会占据1个物理像素，
+这在视觉上看起来就会很细。如果将边的颜色设置成rgba(0,0,0,0.1)，
+由于视觉错觉，你会发现现在的边线就像头发丝一样细。
+
+不是所有的浏览器都支持亚像素渲染的，如果不支持亚像素渲染，
+那么0.5px的边线将显示空。我们需要做一下fallback：
+通过将元素的高度设置为0.5px，然后查看其offsetHeight，
+如果为0说明浏览器不支持亚像素渲染。对于不支持亚像素渲染的浏览器，
+我们可以给html设置一个属性no-hairline,
+然后在css中对于no-hairline的特定class强制设置边线大小为1px。
